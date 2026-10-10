@@ -1,0 +1,122 @@
+# Builds Avianise Stay installers HERE, in the public releases repo, so GitHub doesn't charge build minutes
+# (Actions is free for public repos). The source code stays in the private Avianise-hotel repo: each job fetches
+# it with a read-only token and only the finished installers are published as a release of this repo.
+#
+# Start a build: Actions › Build installers › Run workflow › type the tag (e.g. v1.3.7),
+# or from Terminal:  gh workflow run build.yml -R Avianise-Hotel-management/releases -f tag=v1.3.7
+#
+# Secrets this repo needs (Settings › Secrets and variables › Actions):
+#   SOURCE_TOKEN                        fine-grained token with read access to Avianise-hotel (Contents: Read)
+#   TAURI_SIGNING_PRIVATE_KEY           same values as in the private repo, so installed apps trust the update
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+name: Build installers
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Version tag in Avianise-hotel to build, e.g. v1.3.7"
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    outputs:
+      id: ${{ steps.make.outputs.result }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          repository: Avianise-Hotel-management/Avianise-hotel
+          ref: ${{ inputs.tag }}
+          token: ${{ secrets.SOURCE_TOKEN }}
+          persist-credentials: false
+      - id: make
+        uses: actions/github-script@v7
+        env:
+          TAG: ${{ inputs.tag }}
+        with:
+          result-encoding: string
+          script: |
+            const fs = require("fs");
+            const version = JSON.parse(fs.readFileSync("src-tauri/tauri.conf.json", "utf8")).version;
+            const tag = `v${version}`;
+            // stops a build when the version files weren't bumped (that once re-uploaded over an older release)
+            if (tag !== process.env.TAG) core.setFailed(`The code at ${process.env.TAG} says version ${version}. Bump the version in package.json, src-tauri/tauri.conf.json and src-tauri/Cargo.toml, then tag again.`);
+            const { owner, repo } = context.repo;
+            const body = fs.readFileSync("release-notes.md", "utf8");
+            const all = await github.paginate(github.rest.repos.listReleases, { owner, repo, per_page: 100 });
+            const found = all.find(r => r.tag_name === tag);
+            if (found) {
+              if (!found.draft) core.setFailed(`${tag} is already published. Bump the version to release again.`);
+              core.info(`Using existing draft ${found.id} for ${tag}`); return String(found.id);
+            }
+            const { data } = await github.rest.repos.createRelease({ owner, repo, tag_name: tag, target_commitish: context.sha,
+              name: `Avianise Stay ${tag}`, body, draft: true, prerelease: false });
+            core.info(`Created draft release ${data.id} for ${tag}`);
+            return String(data.id);
+
+  build:
+    needs: release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            args: ""
+          - platform: macos-latest
+            args: "--target aarch64-apple-darwin"
+          - platform: macos-latest
+            args: "--target x86_64-apple-darwin"
+          - platform: ubuntu-22.04
+            args: ""
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          repository: Avianise-Hotel-management/Avianise-hotel
+          ref: ${{ inputs.tag }}
+          token: ${{ secrets.SOURCE_TOKEN }}
+          persist-credentials: false
+      - name: Linux build dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libudev-dev
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+      - run: npm ci
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          owner: ${{ github.repository_owner }}
+          repo: ${{ github.event.repository.name }}
+          releaseId: ${{ needs.release.outputs.id }}
+          includeUpdaterJson: true
+          updaterJsonPreferNsis: true
+          args: ${{ matrix.args }}
+
+  publish:
+    needs: [release, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.repos.updateRelease({ ...context.repo, release_id: Number("${{ needs.release.outputs.id }}"), draft: false, make_latest: "true" });
+            core.info("Release published: installed apps will now offer the update.");
