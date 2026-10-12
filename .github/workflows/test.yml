@@ -20,7 +20,7 @@ on:
 jobs:
   test:
     runs-on: ubuntu-22.04
-    timeout-minutes: 40
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
         with:
@@ -46,7 +46,15 @@ jobs:
         run: npm run test:app
       - name: Cloud tests
         run: npm run test:cloud
+      - name: Build the screens
+        run: npm run build
       - name: Main computer tests
-        run: |
-          mkdir -p dist && [ -f dist/index.html ] || echo '<!doctype html><title>test</title>' > dist/index.html
-          cargo test --manifest-path src-tauri/Cargo.toml --lib
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib
+      # v1.11: a real browser clicks through the demo hotel on the real main computer (every screen, a restaurant
+      # sale, a manager approval, a walk-in check-in) and fails on any crash or blocked script
+      - name: Build the main computer
+        run: cargo build --manifest-path src-tauri/Cargo.toml --bin avianise-server
+      - name: Browser for the tests
+        run: npx playwright install --with-deps chromium
+      - name: Browser tests
+        run: npm run test:e2e
