@@ -1,0 +1,52 @@
+# Runs every test of the private Avianise-hotel code here, in the public repo, where GitHub Actions is free:
+# the app's money maths, the cloud (website bookings, security) and the main computer (night audit, merging, roles,
+# cloud key). ./release.sh starts it for the commit it is about to tag and waits for it; "Build installers" runs it
+# again before building. Only the test results are public; the code is fetched with the read-only SOURCE_TOKEN.
+#   gh workflow run test.yml -R Avianise-Hotel-management/releases -f ref=<commit, branch or tag>
+name: Tests
+run-name: Tests ${{ inputs.ref }}
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Commit, branch or tag of Avianise-hotel to test"
+        required: true
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        required: true
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          repository: Avianise-Hotel-management/Avianise-hotel
+          ref: ${{ inputs.ref }}
+          token: ${{ secrets.SOURCE_TOKEN }}
+          persist-credentials: false
+      - name: Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libudev-dev
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+      - run: npm ci
+      - name: Type check
+        run: npx tsc --noEmit -p .
+      - name: App tests
+        run: npm run test:app
+      - name: Cloud tests
+        run: npm run test:cloud
+      - name: Main computer tests
+        run: |
+          mkdir -p dist && [ -f dist/index.html ] || echo '<!doctype html><title>test</title>' > dist/index.html
+          cargo test --manifest-path src-tauri/Cargo.toml --lib
