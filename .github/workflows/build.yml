@@ -61,8 +61,39 @@ jobs:
             core.info(`Created draft release ${data.id} for ${tag}`);
             return String(data.id);
 
+  # every test must pass on the exact code being built, or no installer is made (v1.9.1)
+  test:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          repository: Avianise-Hotel-management/Avianise-hotel
+          ref: ${{ inputs.tag }}
+          token: ${{ secrets.SOURCE_TOKEN }}
+          persist-credentials: false
+      - name: Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libudev-dev
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+      - run: npm ci
+      - run: npx tsc --noEmit -p .
+      - run: npm run test:app
+      - run: npm run test:cloud
+      - name: Main computer tests
+        run: |
+          mkdir -p dist && [ -f dist/index.html ] || echo '<!doctype html><title>test</title>' > dist/index.html
+          cargo test --manifest-path src-tauri/Cargo.toml --lib
+
   build:
-    needs: release
+    needs: [release, test]
     strategy:
       fail-fast: false
       matrix:
