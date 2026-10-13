@@ -42,6 +42,9 @@ jobs:
       - run: npm ci
       - name: Type check
         run: npx tsc --noEmit -p .
+      - name: Code checks (React hooks)
+        # the code repo before v1.13 has no lint script
+        run: if npm run | grep -q " lint"; then npm run lint; else echo "no lint script"; fi
       - name: App tests
         run: npm run test:app
       - name: Cloud tests
